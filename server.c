@@ -27,19 +27,19 @@
 
 typedef struct
 {
-	char* 					exportname;
-	uint16_t				fd;
-	uint64_t				size;
+	char* 		exportname;
+	uint16_t	fd;
+	uint64_t	size;
 } RESOURCE;
 
 
 typedef struct 
 {
-	uint32_t 				port;
-	uint32_t 				socket;
-	uint32_t				quantity;
-	RESOURCE**				res;
-	uint16_t				seq; // if sequence replies are setting
+	uint32_t 	port;
+	uint32_t 	socket;
+	uint32_t	quantity;
+	RESOURCE**	res;
+	uint16_t	seq; // if sequence replies are setting
 } NBD_SERVER;
 
 
