@@ -1,0 +1,5 @@
+*.gch
+server_back.c
+*.out
+*.exe
+

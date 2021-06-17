@@ -22,7 +22,7 @@
 #define INFO(...)  fprintf(stdout, __VA_ARGS__)
 
 /**
- * Structure described server options
+ * Structures described server options
 **/
 
 typedef struct
@@ -168,7 +168,7 @@ free_resources_cmd_line(RESOURCE** r, int n)
 RESOURCE**
 parse_devices_line(CMD_ARGS* ca)
 {
-	fprintf(stderr, "<<< Parsing arg line >>>\n\n");
+	fprintf(stderr, "\n<<< Parsing arg line >>>\n\n");
 	fprintf(stderr, "Shared resources : \n");
 	RESOURCE** r = (RESOURCE**) malloc(sizeof(RESOURCE*) * ca->n);
 
@@ -290,12 +290,12 @@ handshake_client(uint32_t socket)
 	int flags = ntohl(c_header.clflags);
 	if (flags == NBD_FLAG_C_NO_ZEROES)
 	{
-		INFO("--- Using newstyle negotiation...\n");
+		INFO("... Using newstyle negotiation ...\n");
 		return 1;
 	}
 	if (flags == NBD_FLAG_C_FIXED_NEWSTYLE | NBD_FLAG_C_NO_ZEROES)
 	{
-		INFO("--- Using fixed newstyle negotiation...\n");
+		INFO("... Using fixed newstyle negotiation ...\n");
 		return 0;
 	}
 	ERROR("Unsupported handshake flag from client\n");
@@ -360,7 +360,17 @@ option_reply(uint32_t socket, uint32_t opt, uint32_t reply_type, int32_t datasiz
 	}
 }
 
-void
+/*
+ * structure contained result of option (i.e. chosen file descriptor or last set option)
+*/	
+typedef struct 
+{
+	RESOURCE* res;
+	int last_opt;
+} OPTION_RESULT;
+
+
+RESOURCE*
 option_go_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 {
 	OPTION_GO_DATA* ogd = (OPTION_GO_DATA*)req->data;
@@ -410,6 +420,7 @@ option_go_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 	option_reply(socket, option, NBD_REP_INFO, sizeof(rie), &rie);
 	// start transmission
 	option_reply(socket, option, NBD_REP_ACK, 0, NULL);
+	return res;
 }
 
 void
@@ -439,94 +450,99 @@ option_list_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 /*
  * handling option requests (make a reply if it can)
 */
-int 
+OPTION_RESULT*
 handle_option(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* op_req)
 {
 	uint32_t option = op_req->header->option;
+
+	OPTION_RESULT* result = (OPTION_RESULT*) malloc(sizeof(OPTION_RESULT));
+	result->last_opt = option;
+	result->res = NULL;	
 	switch (option) 
 	{
 		case NBD_OPT_GO:
 		{
-			INFO("option : GO\n");
-			option_go_handle(serv, socket, op_req);
-			break;
+			INFO(">>>> option : GO\n\n");
+			result->res = option_go_handle(serv, socket, op_req);
+			return result;
 		}
 		case NBD_OPT_LIST:	
 		{
-			INFO("option : LIST\n");
+			INFO(">>>> option : LIST\n");
 			option_list_handle(serv, socket, op_req);
-			break;
+			return result;
 		}
 		case NBD_OPT_ABORT:
 		{
-			INFO("option : ABORT\n");
-			break;
+			INFO(">>>> option : ABORT\n");
+			return result;
 		}	
 		case NBD_OPT_STRUCTURED_REPLY:
 		{
-			INFO("option : structed reply\n");
+			INFO(">>>> option : STRUCTURED REPLY\n");
 			serv->seq = 1;
 			option_reply(socket, option, NBD_REP_ERR_UNSUP, 0, NULL);
-			break;
+			return result;
 		}	
 		default:
 		{
-			fprintf(stderr, "unknown option == %d\n", option);
-			ERROR("unknown option\n");
-			return -1;
+			ERROR(">>>> unknown option\n");
+			return result;
 		}
 	}
-	return option;
 }
-	
+
 
 /*
  * main function to handle handshake phase (initial handshake + set options)
 */
-int
+RESOURCE*
 handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
 {
+	INFO("\n<<< Handshake phase >>>\n\n");
 	handshake_server(socket, hs_flags);
+	OPTION_RESULT* result;
 	int hs_type = handshake_client(socket);
-	
+
 	// choose type of handshake in execution flow
 	switch (hs_type)
 	{
 		case -1:
 			ERROR("Initial stage of handshake error\n");
-			return -1;
+			return NULL;
 		case 0:	
 			/* phase of setting options */
-			INFO("--- Setting options...\n");	
+			INFO("\n<<< Option phase >>>\n\n");
 			OPTION_REQUEST* op_client;
 			OPTION_REQUEST_HEADER* oc_header;
+
 			int last_opt;
 			do
 			{
 				op_client = option_request(socket);
 				oc_header = op_client->header;
-				fprintf(stderr, "------\n");	
+				fprintf(stderr, "------ [ REQUEST ] ------\n");	
 				fprintf(stderr, "	magic %llx\n", oc_header->magic);
 				fprintf(stderr, "	opt %x\n", oc_header->option);
 				fprintf(stderr, "	len %d\n", oc_header->len);
-				fprintf(stderr, "------\n");	
+				fprintf(stderr, "-------------------------\n");	
 				
-				last_opt = handle_option(serv, socket, op_client);
+				result = handle_option(serv, socket, op_client);
 				// free dynamic allocated memory
 				free(op_client->data);
 				free(op_client->header);
 				free(op_client);
-			} while (last_opt != NBD_OPT_GO && last_opt != NBD_OPT_ABORT);
+			} while (result->last_opt != NBD_OPT_GO && result->last_opt != NBD_OPT_ABORT);
 			
 			if (last_opt == NBD_OPT_ABORT) 
 			{
 				INFO("abord (handshake)\n");
-				return -1;
+				return NULL;
 			}
-			return 0;
+			return result->res;
 		case 1:
 			ERROR("initial phase of handshake client unsupported\n");
-			return -1;
+			return NULL;
 	}
 }
 
@@ -553,7 +569,7 @@ transmission_reply(uint32_t socket, uint32_t error, uint64_t handle, uint32_t da
 		htonll(handle),
 	};
 	send_socket(socket, &header, sizeof(header));
-	fprintf(stderr, "%d\n", datasize);
+	fprintf(stderr, "--->>> Send - %d bytes <<< ---\n\n", datasize);
 	if(data != NULL) {
 		send_socket(socket, data, datasize);
 	}
@@ -594,7 +610,6 @@ handle_transmission(uint32_t socket, NBD_REQUEST_HEADER* header, uint32_t fd)
 			return NBD_CMD_READ;
 
 		case NBD_CMD_DISC:
-			INFO("Close connection\n");
 			return NBD_CMD_DISC;
 
 		default:
@@ -610,7 +625,7 @@ handle_transmission(uint32_t socket, NBD_REQUEST_HEADER* header, uint32_t fd)
 int
 transmission(uint32_t socket, uint32_t fd)
 {
-	INFO("<<<Transmission phase>>>\n");
+	INFO("\n<<< Transmission phase >>>\n\n");
 	NBD_REQUEST_HEADER header;
 	NBD_REQUEST req = {
 		&header, 
@@ -630,14 +645,14 @@ transmission(uint32_t socket, uint32_t fd)
 		header.length = ntohl(header.length);
 		// MUST VALID HEADER
 
-		fprintf(stderr, "------\n");	
+		fprintf(stderr, "---  [ TRANSMISSION REQUEST ] ---\n");	
 		fprintf(stderr, "	magic %x\n", header.magic);
 		fprintf(stderr, "	flags %x\n", header.flags);
 		fprintf(stderr, "	type %d\n", header.type);
 		fprintf(stderr, "	handle %llx\n", header.handle);
 		fprintf(stderr, "	offset %lld\n", header.offset);
 		fprintf(stderr, "	length %d\n", header.length);
-		fprintf(stderr, "------\n");	
+		fprintf(stderr, "-------------------------------\n");	
 		// when we get cmd to write we must recieve all data from socket
 		if(header.type == NBD_CMD_WRITE)
 		{
@@ -660,7 +675,6 @@ transmission(uint32_t socket, uint32_t fd)
 		ERROR("Unsupported commands, exit\n");
 		return -1;	
 	}
-	INFO("Transmission is closed\n");
 	return 0;
 }
 
@@ -691,6 +705,7 @@ main(int argc, char* argv[])
 	}
 	
 	
+	RESOURCE* resource;
 	// main loop
 	while(1)
 	{
@@ -710,7 +725,8 @@ main(int argc, char* argv[])
 		}
 		if (pid == 0) 
 		{
-			if (handshake(serv, connect_fd, NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES))
+			resource = handshake(serv, connect_fd, NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
+			if (resource == NULL)
 			{
 				ERROR("... Handshake is not established ...\n");
 				free(serv);
@@ -718,14 +734,14 @@ main(int argc, char* argv[])
 			}
 			INFO("[PID = %d]... Handshake is established ....\n", getpid());
 
-			if (transmission(connect_fd, serv->res[0]->fd))
+			if (transmission(connect_fd, resource->fd))
 			{
 				ERROR("...Transmission error...\n");	
 				free(serv);
 				exit(EXIT_FAILURE);
 			}
 			INFO("[PID = %d]... Transmission is closed ...\n", getpid());
-			INFO("<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>\n");
+			INFO("<<<<<<<<<<<<<<<<------------->>>>>>>>>>>>>>\n\n");
 			close(connect_fd);
 			free(serv);
 			return 0;	
