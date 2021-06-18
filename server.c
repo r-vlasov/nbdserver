@@ -447,6 +447,19 @@ option_list_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 	option_reply(socket, option, NBD_REP_ACK, 0, NULL);
 }
 
+void
+option_structured_reply_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
+{
+	uint32_t option = req->header->option;
+	if (req->header->len != 0)
+	{
+		option_reply(socket, option, NBD_REP_ERR_INVALID, -1, "Non-empty data field in NBD_STRUCTURED_REPLY option");
+		exit(EXIT_FAILURE);
+	}
+	serv->seq = 1;
+	option_reply(socket, option, NBD_REP_ACK, 0, NULL);
+}
+
 /*
  * handling option requests (make a reply if it can)
 */
@@ -479,9 +492,8 @@ handle_option(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* op_req)
 		}	
 		case NBD_OPT_STRUCTURED_REPLY:
 		{
+			option_structured_reply_handle(serv, socket, op_req);
 			INFO(">>>> option : STRUCTURED REPLY\n");
-			serv->seq = 1;
-			option_reply(socket, option, NBD_REP_ERR_UNSUP, 0, NULL);
 			return result;
 		}	
 		default:
@@ -551,35 +563,57 @@ handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
  * function returned 0 when request's header in transmition phase is correct
 */
 int
-valid_request_header(NBD_REQUEST_HEADER* header)
+valid_nbd_request_header(NBD_REQUEST_HEADER* header)
 {
 	return 0;
 }
 
 
 /* 
- * create an reply to request (transmission 
+ * create an reply to request (simple reply)
 */
 void 
-transmission_reply(uint32_t socket, uint32_t error, uint64_t handle, uint32_t datasize, void* data) 
+transmission_reply
+(uint32_t socket, uint32_t error, uint64_t handle, uint32_t datasize, void* data) 
 {
 	NBD_RESPONSE_HEADER header = {
-		htonl(0x67446698),
+		htonl(NBD_SIMPLE_REPLY_MAGIC),
 		htonl(error),
 		htonll(handle),
 	};
 	send_socket(socket, &header, sizeof(header));
-	fprintf(stderr, "--->>> Send - %d bytes <<< ---\n\n", datasize);
 	if(data != NULL) {
 		send_socket(socket, data, datasize);
 	}
+	fprintf(stderr, "--->>> Send - %d bytes <<< ---\n\n", datasize);
+}
+
+/* 
+ * create an reply to request (structured chunked reply)
+*/
+void 
+transmission_structured_reply
+(uint32_t socket, uint16_t flags, uint16_t type, uint64_t handle, uint32_t datasize, void* data) 
+{
+	NBD_STRUCTURED_RESPONSE_HEADER header = {
+		htonl(NBD_STRUCTURED_REPLY_MAGIC),
+		htons(flags),
+		htons(type),
+		htonll(handle),
+		htonl(datasize),	
+	};
+	send_socket(socket, &header, sizeof(header));
+	if(data != NULL) {
+		send_socket(socket, data, datasize);
+	}
+	fprintf(stderr, "--->>> Send Structured reply - %d bytes <<< ---\n\n", datasize);
 }
 
 /*
  * handle all transmission commands
 */
 int
-handle_transmission(uint32_t socket, NBD_REQUEST_HEADER* header, uint32_t fd)
+handle_transmission(NBD_SERVER* serv, uint32_t socket, NBD_REQUEST_HEADER* header, uint32_t fd)
 {
 	switch(header->type)
 	{
@@ -588,25 +622,48 @@ handle_transmission(uint32_t socket, NBD_REQUEST_HEADER* header, uint32_t fd)
 			{
 				ERROR("Error to read from file\n");
 				exit(EXIT_FAILURE);
+
 			}
-			void* data = malloc(header->length);
+			int data_offset = serv->seq ? sizeof(header->offset) : 0; // DRY
+			char* data = (char*) malloc(header->length + data_offset);
 			if (data == NULL)
 			{
 				ERROR("malloc error\n");
 				exit(EXIT_FAILURE);
 			}
-			if (read(fd, data, header->length) == -1)
+			if (read(fd, data + data_offset, header->length) == -1)
 			{
 				free(data);
 				ERROR("read file error\n");
 				exit(EXIT_FAILURE);
 			}
-			transmission_reply(socket, 0, header->handle, header->length, data);
+			if (serv->seq)
+			{
+				// this handling of transmission could be optimizated by support addtion types
+				uint64_t n_offset = htonll(header->offset);
+				memcpy(data, &n_offset, sizeof(header->offset));
+				transmission_structured_reply(socket, NBD_REPLY_FLAG_DONE, NBD_REPLY_TYPE_OFFSET_DATA, 
+						header->handle, header->length + data_offset, data);
+			}
+			else	
+			{
+				transmission_reply(socket, 0, header->handle, header->length, data);
+			}
+
 			free(data);
 			return NBD_CMD_READ;
 
 		case NBD_CMD_WRITE:
-			transmission_reply(socket, 0, header->handle, 0, NULL);
+			/* SUPPORT STRUCTURED REPLY */
+			if (serv->seq)
+			{
+				transmission_structured_reply(socket, NBD_REPLY_FLAG_DONE, NBD_REPLY_TYPE_NONE, 
+						header->handle, 0, NULL);
+			}
+			else	
+			{
+				transmission_reply(socket, 0, header->handle, 0, NULL);
+			}
 			return NBD_CMD_READ;
 
 		case NBD_CMD_DISC:
@@ -623,7 +680,7 @@ handle_transmission(uint32_t socket, NBD_REQUEST_HEADER* header, uint32_t fd)
  * transmission phase
 */
 int
-transmission(uint32_t socket, uint32_t fd)
+transmission(NBD_SERVER* serv, uint32_t socket, uint32_t fd)
 {
 	INFO("\n<<< Transmission phase >>>\n\n");
 	NBD_REQUEST_HEADER header;
@@ -667,7 +724,7 @@ transmission(uint32_t socket, uint32_t fd)
 		}
 		
 		// handle each request
-		last_cmd = handle_transmission(socket, &header, fd);	
+		last_cmd = handle_transmission(serv, socket, &header, fd);	
 	}
 	while (last_cmd != NBD_CMD_DISC && last_cmd != -1);
 	if (last_cmd == -1)
@@ -734,7 +791,7 @@ main(int argc, char* argv[])
 			}
 			INFO("[PID = %d]... Handshake is established ....\n", getpid());
 
-			if (transmission(connect_fd, resource->fd))
+			if (transmission(serv, connect_fd, resource->fd))
 			{
 				ERROR("...Transmission error...\n");	
 				free(serv);

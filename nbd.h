@@ -110,7 +110,7 @@ typedef struct {
 
 
 /*
- * response of request (option)
+ * response to request (option)
 */
 typedef struct {
 	unsigned long long  magic;
@@ -118,7 +118,6 @@ typedef struct {
 	unsigned int        reply_type;
 	unsigned int        datasize;
 } __attribute__ ((packed)) OPTION_REPLY_HEADER;
-
 
 typedef struct {
     OPTION_REPLY_HEADER*    header;
@@ -143,8 +142,16 @@ typedef struct {
 
 
 /* transmission phase */
+#define NBD_SIMPLE_REPLY_MAGIC		0x67446698
+#define NBD_STRUCTURED_REPLY_MAGIC 	0x668e33ef
+
 #define NBD_FLAG_HAS_FLAGS  (1 << 0)
 #define NBD_FLAG_READ_ONLY 	(1 << 1)
+
+// structured reply chunk
+#define NBD_REPLY_TYPE_NONE	 		0
+#define NBD_REPLY_TYPE_OFFSET_DATA 	1
+#define NBD_REPLY_FLAG_DONE	(1 << 0)
 
 #define NBD_CMD_READ        0
 #define NBD_CMD_WRITE       1
@@ -170,6 +177,7 @@ typedef struct {
 
 /*
  * transmition reply (to client)
+ * SIMPLE REPLY
 */
 typedef struct {
 	unsigned int        magic;
@@ -177,10 +185,18 @@ typedef struct {
 	unsigned long long  handle;
 } __attribute__((packed)) NBD_RESPONSE_HEADER;
 
+/*
+ * transmition reply (to client)
+ * STRUCTURED REPLY CHUNK MESSAGE
+*/
 typedef struct {
-	NBD_RESPONSE_HEADER* header;
-    void*                data;
-} __attribute__((packed)) NBD_RESPONSE;
+	unsigned int        magic;
+	unsigned short 		flags;
+	unsigned short		type;
+	unsigned long long	handle;
+	unsigned int		length;
+} __attribute__((packed)) NBD_STRUCTURED_RESPONSE_HEADER;
+
 
 
 
