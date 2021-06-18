@@ -8,18 +8,27 @@
 #include <sys/socket.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+#include <netinet/in.h>
 
 // custom
 #include "nbd.h"    // lib with useful NBD structures and constants
 
+
 #define ERROR(...) fprintf(stderr, __VA_ARGS__)
 #define INFO(...)  fprintf(stdout, __VA_ARGS__)
+
+// in debug mode
+#ifndef _DEBUG
+	#define DEBUG(...)  fprintf(stderr, __VA_ARGS__)
+#elif
+	#define DEBUG(...)	;
+#endif
 
 /**
  * Structures described server options
@@ -41,8 +50,31 @@ typedef struct
 	RESOURCE**	res;
 	uint16_t	seq; // if sequence replies are setting
 } NBD_SERVER;
+NBD_SERVER* nbd_server;
 
 
+void
+free_resources_cmd_line(RESOURCE** r, int n)
+{
+	for (int i = 0; i < n; i++)
+	{
+		close(r[i]->fd);
+		free(r[i]);
+	}
+	free(r);
+}
+
+/**
+ * Handle ctrl+c
+**/
+void 
+handle_signit(int _)
+{
+	free_resources_cmd_line(nbd_server->res, nbd_server->quantity);
+	free(nbd_server);
+	exit(0);
+}
+	
 /**
  * Server initialization (create socket)
 **/
@@ -61,7 +93,7 @@ init_server(uint32_t port)
 	s->socket = socket(AF_INET, SOCK_STREAM, 0);
 	if (s->socket == 0)
 	{
-		ERROR("socket lcall error");
+		ERROR("socket lcall error\n");
 		free(s);
 		return NULL;
 	}
@@ -75,14 +107,24 @@ init_server(uint32_t port)
 	// binding
 	if (bind(s->socket, (struct sockaddr*) &serv_addr, sizeof(serv_addr)))
 	{
-		ERROR("bind lcall error");
+		ERROR("bind lcall error\n");
 		free(s);
 		return NULL;
 	}
 	
 	// sequence reply flag
 	s->seq = 0;
-	return s;	
+
+	// ctrl-c catch
+	struct sigaction act;
+	act.sa_handler = handle_signit;
+/*	if(sigaction(SIGINT, &act, NULL) == -1)
+	{
+		ERROR("sigaction error\n");
+		free(s);
+		return NULL;
+	}
+*/	return s;	
 }
 
 /**
@@ -115,7 +157,6 @@ valid_cmdline(int argc, char* argv[])
 		if (ca == NULL)
 		{
 			ERROR("malloc error");
-			free(ca);
 			exit(EXIT_FAILURE);
 		}
 
@@ -153,13 +194,32 @@ valid_cmdline(int argc, char* argv[])
 	return NULL;
 }
 
-
-void
-free_resources_cmd_line(RESOURCE** r, int n)
+/* 
+ *	return size of file (even if file is block device
+*/
+int 
+get_file_size(int fd) 
 {
-	for (int i = 0; i < n; i++)
-		free(r[i]);
-	free(r);
+	struct stat st;
+	if (fstat(fd, &st) < 0)
+	{ 
+		return -1;
+	}
+	if (S_ISBLK(st.st_mode))
+	{
+		uint64_t bs;
+		if (ioctl(fd, BLKGETSIZE64, &bs) != 0)
+		{
+			return -1;
+		}
+		return bs;
+	}
+	else
+	{
+		if (S_ISREG(st.st_mode))
+			return st.st_mode;
+		return -1;
+	}
 }
 
 /*
@@ -200,7 +260,7 @@ parse_devices_line(CMD_ARGS* ca)
 		}
 		r[i]->exportname = ca->lf_path_name[2 * i + 1];
 
-		r[i]->size = lseek(r[i]->fd, 0, SEEK_END) + 1;
+		r[i]->size = get_file_size(r[i]->fd);
 		if (r[i]->size == -1)
 		{
 			ERROR("Failed to stat file");
@@ -401,6 +461,7 @@ option_go_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 			option_reply(socket, option, NBD_REP_ERR_UNKNOWN, -1, "Can't find requested resource");
 			exit(EXIT_FAILURE);
 		}
+		free(export);
 	}
 	else
 	{
@@ -513,7 +574,7 @@ handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
 {
 	INFO("\n<<< Handshake phase >>>\n\n");
 	handshake_server(socket, hs_flags);
-	OPTION_RESULT* result;
+	OPTION_RESULT* result = NULL;
 	int hs_type = handshake_client(socket);
 
 	// choose type of handshake in execution flow
@@ -528,9 +589,10 @@ handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
 			OPTION_REQUEST* op_client;
 			OPTION_REQUEST_HEADER* oc_header;
 
-			int last_opt;
 			do
 			{
+				if (result != NULL) 
+					free(result); 
 				op_client = option_request(socket);
 				oc_header = op_client->header;
 				fprintf(stderr, "------ [ REQUEST ] ------\n");	
@@ -546,12 +608,14 @@ handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
 				free(op_client);
 			} while (result->last_opt != NBD_OPT_GO && result->last_opt != NBD_OPT_ABORT);
 			
-			if (last_opt == NBD_OPT_ABORT) 
+			if (result->last_opt == NBD_OPT_ABORT) 
 			{
 				INFO("abord (handshake)\n");
 				return NULL;
 			}
-			return result->res;
+			RESOURCE* return_res = result->res;
+			free(result);
+			return return_res;
 		case 1:
 			ERROR("initial phase of handshake client unsupported\n");
 			return NULL;
@@ -649,7 +713,6 @@ handle_transmission(NBD_SERVER* serv, uint32_t socket, NBD_REQUEST_HEADER* heade
 			{
 				transmission_reply(socket, 0, header->handle, header->length, data);
 			}
-
 			free(data);
 			return NBD_CMD_READ;
 
@@ -745,33 +808,34 @@ main(int argc, char* argv[])
 	CMD_ARGS* cmd_args	= valid_cmdline(argc, argv); 
 	if (!cmd_args) 	return 0;	
 
-	NBD_SERVER* serv 	= init_server(cmd_args->port);
-	if (!serv) 		return 0;
+	// main server
+	nbd_server = init_server(cmd_args->port);
+	if (!nbd_server) 		return 0;
 
-	serv->quantity = cmd_args->n;
+	nbd_server->quantity = cmd_args->n;
 
-	serv->res = parse_devices_line(cmd_args);
+	nbd_server->res = parse_devices_line(cmd_args);
 
 	// listening socket
-	if (listen(serv->socket, 10))
+	if (listen(nbd_server->socket, 10))
 	{
 		ERROR("listen lcall error\n");
-		free(serv);
+		free(nbd_server);
 		free(cmd_args);
 		return 0;
 	}
+	free(cmd_args);	
 	
-	
-	RESOURCE* resource;
+	RESOURCE* resource = NULL;
 	// main loop
 	while(1)
 	{
-		int connect_fd = accept(serv->socket, (struct sockaddr*) NULL, NULL);
+		int connect_fd = accept(nbd_server->socket, (struct sockaddr*) NULL, NULL);
 		if (!connect_fd) 
 		{
 			ERROR("accept lcall error\n");
-			close(serv->socket);
-			free(serv);
+			close(nbd_server->socket);
+			free(nbd_server);
 			return 0;
 		}
 		pid_t pid = fork();
@@ -782,29 +846,29 @@ main(int argc, char* argv[])
 		}
 		if (pid == 0) 
 		{
-			resource = handshake(serv, connect_fd, NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
+			close(nbd_server->socket);
+			resource = handshake(nbd_server, connect_fd, NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES);
 			if (resource == NULL)
 			{
 				ERROR("... Handshake is not established ...\n");
-				free(serv);
+				free(nbd_server);
 				exit(EXIT_FAILURE);
 			}
 			INFO("[PID = %d]... Handshake is established ....\n", getpid());
 
-			if (transmission(serv, connect_fd, resource->fd))
+			if (transmission(nbd_server, connect_fd, resource->fd))
 			{
 				ERROR("...Transmission error...\n");	
-				free(serv);
+				free(nbd_server);
 				exit(EXIT_FAILURE);
 			}
 			INFO("[PID = %d]... Transmission is closed ...\n", getpid());
 			INFO("<<<<<<<<<<<<<<<<------------->>>>>>>>>>>>>>\n\n");
 			close(connect_fd);
-			free(serv);
+			free_resources_cmd_line(nbd_server->res, nbd_server->quantity);
+			free(nbd_server);
 			return 0;	
 		}
 	}
-	free(serv);
-	return 0;
 }
-	
+
