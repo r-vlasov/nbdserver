@@ -10,36 +10,16 @@
 #include <string.h>
 #include <signal.h>
 #include <stdio.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/ioctl.h>
-#include <linux/fs.h>
 #include <netinet/in.h>
 
 // custom
-#include "nbd.h"    // lib with useful NBD structures and constants
-
-
-#define ERROR(...) fprintf(stderr, __VA_ARGS__)
-#define INFO(...)  fprintf(stdout, __VA_ARGS__)
-
-// in debug mode
-#ifndef _DEBUG
-	#define DEBUG(...)  fprintf(stderr, __VA_ARGS__)
-#elif
-	#define DEBUG(...)	;
-#endif
+#include "includes/nbd.h"    // lib with useful NBD structures and constants
+#include "includes/args.h"   // work with shared resources and command line parsing
+#include "includes/functions.h"  // htonll, ntohll, ERROR, INFO, DEBUG
 
 /**
  * Structures described server options
 **/
-
-typedef struct
-{
-	char* 		exportname;
-	uint16_t	fd;
-	uint64_t	size;
-} RESOURCE;
 
 
 typedef struct 
@@ -50,19 +30,8 @@ typedef struct
 	RESOURCE**	res;
 	uint16_t	seq; // if sequence replies are setting
 } NBD_SERVER;
-NBD_SERVER* nbd_server;
+NBD_SERVER* nbd_server; // main server
 
-
-void
-free_resources_cmd_line(RESOURCE** r, int n)
-{
-	for (int i = 0; i < n; i++)
-	{
-		close(r[i]->fd);
-		free(r[i]);
-	}
-	free(r);
-}
 
 /**
  * Handle ctrl+c
@@ -127,154 +96,6 @@ init_server(uint32_t port)
 */	return s;	
 }
 
-/**
- * Struct of command line arguments
-**/
-typedef struct
-{
-	uint32_t 	port;
-	char** 		lf_path_name;
-	uint32_t	n;
-} CMD_ARGS;
-
-/**
- * Function that check argv line
- *	 1st arg - binded port
- *	 2nd arg - path to shared file
-**/
-CMD_ARGS*
-valid_cmdline(int argc, char* argv[])
-{
-	if (argc > 4)
-	{
-		if (strcmp(argv[1], "-p") || strcmp(argv[3], "-d"))
-		{	
-			INFO("usage: nbd-server -p [port] -d [[file]...]\n");
-			return NULL;
-		}
-
-		CMD_ARGS* ca = (CMD_ARGS*) malloc(sizeof(CMD_ARGS));
-		if (ca == NULL)
-		{
-			ERROR("malloc error");
-			exit(EXIT_FAILURE);
-		}
-
-		uint32_t port = atoi(argv[2]);  // port
-		if (port >= 65536) 
-		{
-			ERROR("invalid port");
-			free(ca);
-			return NULL;
-		}
-		ca->port = port;
-		ca->lf_path_name = argv + 4; 	// array with device:name
-			
-
-		int file_numb = argc - 4;
-		if (file_numb % 2 != 0)
-		{
-			INFO("Invalid number of shared devices\n");
-			free(ca);
-			return NULL;
-		}
-		for (int i = 0; i < file_numb; i++)
-		{
-			if (i % 2 == 0 && access(ca->lf_path_name[i], F_OK))
-			{
-				ERROR("failed to access file");
-				free(ca);
-				return NULL;
-			}
-		}
-		ca->n = file_numb / 2;
-		return ca;
-	}
-	INFO("usage: nbd-server -p [port] -d [[file] [name]...]\n");
-	return NULL;
-}
-
-/* 
- *	return size of file (even if file is block device
-*/
-int 
-get_file_size(int fd) 
-{
-	struct stat st;
-	if (fstat(fd, &st) < 0)
-	{ 
-		return -1;
-	}
-	if (S_ISBLK(st.st_mode))
-	{
-		uint64_t bs;
-		if (ioctl(fd, BLKGETSIZE64, &bs) != 0)
-		{
-			return -1;
-		}
-		return bs;
-	}
-	else
-	{
-		if (S_ISREG(st.st_mode))
-			return st.st_mode;
-		return -1;
-	}
-}
-
-/*
- * function that separate argv line (dev1, name1), (dev2, name2) to RESOURCEs' array
-*/
-RESOURCE**
-parse_devices_line(CMD_ARGS* ca)
-{
-	fprintf(stderr, "\n<<< Parsing arg line >>>\n\n");
-	fprintf(stderr, "Shared resources : \n");
-	RESOURCE** r = (RESOURCE**) malloc(sizeof(RESOURCE*) * ca->n);
-
-	struct stat st;
-	if (r == NULL)
-	{
-		ERROR("malloc error");
-		free(ca);
-		exit(EXIT_FAILURE);
-	}
-	for (int i = 0; i < ca->n; i++)
-	{
-		r[i] = (RESOURCE*) malloc(sizeof(RESOURCE));
-		if (r[i] == NULL)
-		{
-			ERROR("malloc error");
-			free_resources_cmd_line(r, i);
-			free(ca);
-			exit(EXIT_FAILURE);
-		}
-
-		r[i]->fd = open(ca->lf_path_name[2 * i], O_RDONLY);
-		if (r[i]->fd == -1)
-		{
-			ERROR("Failed to open file");
-			free_resources_cmd_line(r, i);
-			free(ca);
-			exit(EXIT_FAILURE);
-		}
-		r[i]->exportname = ca->lf_path_name[2 * i + 1];
-
-		r[i]->size = get_file_size(r[i]->fd);
-		if (r[i]->size == -1)
-		{
-			ERROR("Failed to stat file");
-			free_resources_cmd_line(r, i);
-			free(ca);
-			exit(EXIT_FAILURE);
-		}
-
-		fprintf(stderr, "Name = %s\n", r[i]->exportname);
-		fprintf(stderr, "Path = %s\n", ca->lf_path_name[2 * i]);
-		fprintf(stderr, "File size = %ld\n-------------\n", r[i]->size);
-	}
-	return r;
-}
 
 /*
  * function finded file descriptor of file by exportname
@@ -294,33 +115,6 @@ find_res_by_name(NBD_SERVER* serv, char* name)
 	}
 	return NULL;
 }
-
-void
-send_socket(int socket, void* data, int len)
-{
-	if (write(socket, data, len) == -1)
-	{
-		ERROR("write to socket error");
-		exit(EXIT_FAILURE);
-	}
-} 
-
-void
-recv_socket(int socket, void* data, int len)
-{	
-	int cnt = read(socket, data, len);
-	int acc = cnt;
-	while (acc != len && cnt != -1)
-	{
-		cnt = read(socket, data, len);
-		acc += cnt;
-	}
-	if (cnt == 0)
-	{
-		ERROR("read from socket error");
-		exit(EXIT_FAILURE);
-	}
-} 
 
 /* initial phase : S -> C */
 void 
@@ -565,7 +359,6 @@ handle_option(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* op_req)
 	}
 }
 
-
 /*
  * main function to handle handshake phase (initial handshake + set options)
 */
@@ -622,7 +415,6 @@ handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
 	}
 }
 
-
 /* 
  * function returned 0 when request's header in transmition phase is correct
 */
@@ -631,7 +423,6 @@ valid_nbd_request_header(NBD_REQUEST_HEADER* header)
 {
 	return 0;
 }
-
 
 /* 
  * create an reply to request (simple reply)
@@ -738,7 +529,6 @@ handle_transmission(NBD_SERVER* serv, uint32_t socket, NBD_REQUEST_HEADER* heade
 	}
 }
 			
-
 /* 
  * transmission phase
 */
@@ -797,7 +587,6 @@ transmission(NBD_SERVER* serv, uint32_t socket, uint32_t fd)
 	}
 	return 0;
 }
-
 
 /**
  * Entry point

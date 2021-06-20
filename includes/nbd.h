@@ -4,37 +4,8 @@
  * Unit with useful NBD structures and magics 
 **/
 
-
-/** 
- *   function that translate network byteorder to host
-**/
-unsigned long long		
-ntohll(const unsigned long long input)
-{
-	unsigned long long rval;
-	unsigned char* data = (unsigned char*) &rval;
-	data[0] = input >> 56;
-	data[1] = input >> 48;
-	data[2] = input >> 40;
-	data[3] = input >> 32;
-	data[4] = input >> 24;
-	data[5] = input >> 16;
-	data[6] = input >> 8;
-	data[7] = input >> 0;
-	return rval;
-}
-
-
-/** 
- *   inverse of ntohll
-**/
-unsigned long long
-htonll(const unsigned long long input)
-{
-	return ntohll(input);
-}
-
-
+#ifndef _NBDSERVER_H
+#define _NBDSERVER_H
 
 /* 
  *
@@ -75,10 +46,10 @@ typedef struct {
  *   setting of options phase
  *
 */	
-#define NBD_OPT_ABORT 				2
+#define NBD_OPT_ABORT				2
 #define NBD_OPT_LIST				3
 #define NBD_OPT_GO					7
-#define NBD_OPT_STRUCTURED_REPLY 	8
+#define NBD_OPT_STRUCTURED_REPLY	8
 
 // reply
 #define NBD_OPTION_REPLY_MAGIC		0x3e889045565a9
@@ -149,9 +120,9 @@ typedef struct {
 #define NBD_FLAG_READ_ONLY 	(1 << 1)
 
 // structured reply chunk
-#define NBD_REPLY_TYPE_NONE	 		0
-#define NBD_REPLY_TYPE_OFFSET_DATA 	1
-#define NBD_REPLY_FLAG_DONE	(1 << 0)
+#define NBD_REPLY_TYPE_NONE			0
+#define NBD_REPLY_TYPE_OFFSET_DATA	1
+#define NBD_REPLY_FLAG_DONE			(1 << 0)
 
 #define NBD_CMD_READ        0
 #define NBD_CMD_WRITE       1
@@ -198,5 +169,4 @@ typedef struct {
 } __attribute__((packed)) NBD_STRUCTURED_RESPONSE_HEADER;
 
 
-
-
+#endif
