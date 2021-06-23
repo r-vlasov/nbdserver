@@ -1,5 +1,5 @@
 *.gch
-server_back.c
 *.out
 *.exe
+nbd_server
 
