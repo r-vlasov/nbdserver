@@ -236,6 +236,7 @@ option_go_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 	if (len > req->header->len - 6)
 	{
 		option_reply(socket, option, NBD_REP_ERR_UNKNOWN, -1, "Incorrect length in option data field");
+		ERROR("Incorrect length in option data field\n");
 		exit(EXIT_FAILURE);
 	}
 
@@ -253,6 +254,7 @@ option_go_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 		if (res == NULL)
 		{
 			option_reply(socket, option, NBD_REP_ERR_UNKNOWN, -1, "Can't find requested resource");
+			ERROR("Can't find requested resource\n");
 			exit(EXIT_FAILURE);
 		}
 		free(export);
@@ -263,6 +265,7 @@ option_go_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 		if (res == NULL)
 		{
 			option_reply(socket, option, NBD_REP_ERR_UNKNOWN, -1, "Can't find default resource");
+			ERROR("Can't find default resource\n");
 			exit(EXIT_FAILURE);
 		}		
 	}
@@ -285,6 +288,7 @@ option_list_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST* req)
 	if (req->header->len != 0)
 	{
 		option_reply(socket, option, NBD_REP_ERR_INVALID, -1, "Non-empty data field in NBD_OPT_LIST option");
+		ERROR("Non-empty data field in NBD_OPT_LIST option");
 		exit(EXIT_FAILURE);
 	}
 	RESOURCE** r = serv->res;
@@ -309,6 +313,7 @@ option_structured_reply_handle(NBD_SERVER* serv, uint32_t socket, OPTION_REQUEST
 	if (req->header->len != 0)
 	{
 		option_reply(socket, option, NBD_REP_ERR_INVALID, -1, "Non-empty data field in NBD_STRUCTURED_REPLY option");
+		ERROR("Non-empty data field in NBD_STRUCTURED_REPLY option");
 		exit(EXIT_FAILURE);
 	}
 	serv->seq = 1;

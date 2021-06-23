@@ -89,7 +89,7 @@ get_file_size(int fd)
 	else
 	{
 		if (S_ISREG(st.st_mode))
-			return st.st_mode;
+			return st.st_size;
 		return -1;
 	}
 }
