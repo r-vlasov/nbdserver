@@ -426,6 +426,10 @@ handshake(NBD_SERVER* serv, uint32_t socket, uint16_t hs_flags)
 int
 valid_nbd_request_header(NBD_REQUEST_HEADER* header)
 {
+	if (header->magic != NBD_REQUEST_MAGIC)
+		return 1;
+	if (header->type & (NBD_CMD_READ | NBD_CMD_WRITE | NBD_CMD_DISC) == 0)
+		return 1;
 	return 0;
 }
 
@@ -558,8 +562,13 @@ transmission(NBD_SERVER* serv, uint32_t socket, uint32_t fd)
 		header.handle = ntohll(header.handle);
 		header.offset = ntohll(header.offset);
 		header.length = ntohl(header.length);
-		// MUST VALID HEADER
 
+		// MUST VALID HEADER
+		if (valid_nbd_request_header(&header))
+		{
+			ERROR("Non-valid request header (transmission mode)\n");
+			exit(EXIT_FAILURE);
+		}
 		fprintf(stderr, "---  [ TRANSMISSION REQUEST ] ---\n");	
 		fprintf(stderr, "	magic %x\n", header.magic);
 		fprintf(stderr, "	flags %x\n", header.flags);

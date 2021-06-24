@@ -113,6 +113,7 @@ typedef struct {
 
 
 /* transmission phase */
+#define NBD_REQUEST_MAGIC			0x25609513
 #define NBD_SIMPLE_REPLY_MAGIC		0x67446698
 #define NBD_STRUCTURED_REPLY_MAGIC 	0x668e33ef
 
